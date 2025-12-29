@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3" // YAML 파싱을 위한 외부 라이브러리 필요
@@ -189,6 +192,13 @@ func main() {
 		w.Write([]byte(listFiles(config.PathPod)))
 	})
 
+	// ... previous handlers ...
+
+	// 7. Pod API (Kubernetes Visualization)
+	// CORS Middleware usage
+	http.Handle("/api/pods", enableCORS(http.HandlerFunc(handlePods)))
+	http.Handle("/api/pods/", enableCORS(http.HandlerFunc(handlePodDetail)))
+
 	// Server Start
 	fmt.Println("Starting Go Server on port 8080...")
 	
@@ -197,6 +207,148 @@ func main() {
 	
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		panic(err)
+	}
+}
+
+// --- Pod API Logic ---
+
+type Pod struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Status   string    `json:"status"`
+	Position []float64 `json:"position"`
+	HP       int       `json:"hp"`
+}
+
+var (
+	pods     []Pod
+	podsLock sync.RWMutex
+)
+
+func init() {
+	// Initialize with some dummy data
+	podsLock.Lock()
+	defer podsLock.Unlock()
+	pods = []Pod{
+		{ID: "1", Name: "nginx-1", Status: "Running", Position: []float64{-2, 0, -2}, HP: 5},
+		{ID: "2", Name: "redis-1", Status: "Pending", Position: []float64{2, 0, -2}, HP: 5},
+		{ID: "3", Name: "api-svr", Status: "Failed", Position: []float64{-2, 0, 2}, HP: 5},
+		{ID: "4", Name: "test-target", Status: "Running", Position: []float64{2, 0, 2}, HP: 5},
+	}
+}
+
+func enableCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*") // For development allowed *
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func handlePods(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case "GET":
+		podsLock.RLock()
+		defer podsLock.RUnlock()
+		json.NewEncoder(w).Encode(pods)
+
+	case "POST":
+		var newPod Pod
+		// Simulate random pod creation logic if body is empty or handle passed body
+		// Here we generate a random pod as per frontend "Add Random Pod" logic
+		
+		id := strconv.FormatInt(time.Now().UnixNano(), 10)
+		statuses := []string{"Running", "Pending", "Failed"}
+		
+		newPod = Pod{
+			ID:     id,
+			Name:   "pod-" + id[len(id)-4:],
+			Status: statuses[rand.Intn(len(statuses))],
+			Position: []float64{
+				(rand.Float64() - 0.5) * 6,
+				0,
+				(rand.Float64() - 0.5) * 6,
+			},
+			HP: 5,
+		}
+
+		podsLock.Lock()
+		pods = append(pods, newPod)
+		podsLock.Unlock()
+
+		json.NewEncoder(w).Encode(newPod)
+	
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func handlePodDetail(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
+	// Extract ID from URL /api/pods/{id}
+	path := strings.TrimPrefix(r.URL.Path, "/api/pods/")
+	if path == "" {
+		http.Error(w, "Missing ID", http.StatusBadRequest)
+		return
+	}
+	id := path
+
+	switch r.Method {
+	case "PATCH":
+		var updateData struct {
+			HP     *int    `json:"hp"`
+			Status *string `json:"status"`
+			LastHit int64 `json:"lastHit"` // optional tracking
+		}
+		if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		podsLock.Lock()
+		defer podsLock.Unlock()
+
+		for i, p := range pods {
+			if p.ID == id {
+				if updateData.HP != nil {
+					pods[i].HP = *updateData.HP
+				}
+				if updateData.Status != nil {
+					pods[i].Status = *updateData.Status
+				}
+				json.NewEncoder(w).Encode(pods[i])
+				return
+			}
+		}
+		http.Error(w, "Pod not found", http.StatusNotFound)
+
+	case "DELETE":
+		podsLock.Lock()
+		defer podsLock.Unlock()
+
+		for i, p := range pods {
+			if p.ID == id {
+				// Remove from slice
+				pods = append(pods[:i], pods[i+1:]...)
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"message": "deleted"}`))
+				return
+			}
+		}
+		http.Error(w, "Pod not found", http.StatusNotFound)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
