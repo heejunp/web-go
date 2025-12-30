@@ -235,6 +235,50 @@ func init() {
 		{ID: "3", Name: "api-svr", Status: "Failed", Position: []float64{-2, 0, 2}, HP: 5},
 		{ID: "4", Name: "test-target", Status: "Running", Position: []float64{2, 0, 2}, HP: 5},
 	}
+
+	// [Self-Healing Simulation]
+	// Start a goroutine to act as a ReplicaSet Controller
+	go func() {
+		for {
+			time.Sleep(3 * time.Second) // Check every 3 seconds
+			
+			podsLock.Lock()
+			currentCount := len(pods)
+			targetCount := 4 
+
+			if currentCount < targetCount {
+				// Create new Pod (Respawning)
+				id := strconv.FormatInt(time.Now().UnixNano(), 10)
+				newPod := Pod{
+					ID:     id,
+					Name:   "replica-" + id[len(id)-4:],
+					Status: "Pending", // Start as Pending
+					Position: []float64{
+						(rand.Float64() - 0.5) * 6,
+						0,
+						(rand.Float64() - 0.5) * 6,
+					},
+					HP: 5,
+				}
+				pods = append(pods, newPod)
+				fmt.Printf("[ReplicaSet] Detected missing pod. Respawned: %s\n", newPod.Name)
+				
+				// Simulate startup delay: Pending -> Running after 2s
+				go func(pID string) {
+					time.Sleep(2 * time.Second)
+					podsLock.Lock()
+					defer podsLock.Unlock()
+					for i := range pods {
+						if pods[i].ID == pID {
+							pods[i].Status = "Running"
+							break
+						}
+					}
+				}(id)
+			}
+			podsLock.Unlock()
+		}
+	}()
 }
 
 func enableCORS(next http.Handler) http.Handler {
@@ -304,6 +348,9 @@ func handlePodDetail(w http.ResponseWriter, r *http.Request) {
 	id := path
 
 	switch r.Method {
+	case "OPTIONS":
+		w.WriteHeader(http.StatusOK)
+		return
 	case "PATCH":
 		var updateData struct {
 			HP     *int    `json:"hp"`
