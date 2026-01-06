@@ -1,26 +1,22 @@
-# 1. Build Stage
-FROM golang:1.25-alpine AS builder
-
+# ---- Build stage ----
+FROM golang:1.22-alpine AS builder
 WORKDIR /app
 
-# go.mod와 go.sum 복사
-COPY go.mod ./
+# 캐시용 모듈 다운로드
+COPY go.mod go.sum ./
+RUN go mod download
 
+# 소스 복사 & 빌드
 COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /web-go .
 
-# 의존성 다운로드
-RUN go mod tidy
+# ---- Runtime stage ----
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=builder /web-go /app/web-go
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o myapp main.go
+# 포트 (gRPC 50051, HTTP 8080)
+EXPOSE 50051 8080
 
-# 2. Run Stage
-FROM alpine:latest
-WORKDIR /root/
-
-COPY --from=builder /app/myapp .
-
-# 파일 생성 테스트용 디렉토리
-RUN mkdir -p /files/pv /files/pod
-
-EXPOSE 8080
-CMD ["./myapp"]
+# 실행
+ENTRYPOINT ["/app/web-go"]
